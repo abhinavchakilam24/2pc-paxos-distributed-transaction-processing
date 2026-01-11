@@ -1,149 +1,198 @@
-# CSE535 F25 – Project 3: Paxos Sharded Bank
+# ShardLedger
 
-A local demo of a sharded, Paxos-based replicated bank with ten client workers and nine node processes organized into three clusters.
- 
-## Prerequisites
-- **Java 21** (the Gradle wrapper will handle Gradle itself)
-- **macOS/Linux shell** (commands below use `./gradlew`)
-- **Ports 51051–51059** available on `127.0.0.1`
+**ShardLedger** is a fault-tolerant distributed transaction processing system that supports
+**strongly consistent, sharded transactions**. It combines **Multi-Paxos** for replication with
+**Two-Phase Commit (2PC)** for atomic cross-shard transactions, closely modeling the core
+architecture used in modern distributed databases and financial systems.
 
-## Build
+The system is designed to be **crash-resilient, deterministic, observable, and easy to run locally**.
+
+---
+
+## Highlights
+
+- Strong consistency (linearizability) using **Multi-Paxos**
+- Fault tolerance under leader and replica failures
+- Sharded architecture with replicated clusters
+- Atomic cross-shard transactions via **Two-Phase Commit**
+- Write-ahead logging (WAL) for safe aborts and recovery
+- Dynamic, workload-driven resharding
+- Built-in benchmarking (throughput & latency)
+- Rich runtime inspection (logs, DB state, views)
+
+---
+
+## System Architecture
+
+- **9 nodes** organized into **3 clusters**
+- Each cluster owns **one data shard**, replicated across 3 nodes
+- Each cluster independently elects a Paxos leader
+- Clients route requests using a shard map
+- Cross-shard transactions are coordinated using 2PC on top of Paxos
+
+There is **no shared memory** between nodes. All coordination happens via RPC-style messaging.
+
+---
+
+## Transaction Types
+
+### Read-Only
+- Served directly by the shard leader
+- No consensus required
+
+### Intra-Shard Transfers
+- Fully replicated using Multi-Paxos
+- Ordered, deterministic execution
+
+### Cross-Shard Transfers
+- Atomic across shards using Two-Phase Commit
+- Paxos-backed durability for both prepare and commit phases
+- WAL-based rollback on aborts
+
+The system guarantees **exactly-once execution** and deterministic recovery.
+
+---
+
+## Tech Stack
+
+- **Language**: Java 21
+- **Build Tool**: Gradle
+- **Architecture**: Multi-process replicated state machines
+- **Communication**: RPC (gRPC-style)
+- **Persistence**: Replicated logs + write-ahead logging (WAL)
+
+---
+
+## Getting Started
+
+### Prerequisites
+- Java 21+
+- macOS or Linux
+- Ports `51051–51059` available on `127.0.0.1`
+
+---
+
+### Build
 ```bash
 ./gradlew clean build
-```
 
-## Run the nodes
-From the repository root you can either run all nine nodes in one process or in separate terminals.
+## Run Nodes Individually (Optional)
 
-### Option A: run all nine nodes together (easiest)
+Run each command in a separate terminal:
 
-```bash
-./gradlew :node:runNodes
-```
-
-This starts nodes `n1`–`n9` on `127.0.0.1:51051`–`51059`.
-
-### Option B: run each node in its own terminal
-
-Open nine separate terminals, one per node, and run the following from the repository root:
-
-- Terminal 1:
 ```bash
 ./gradlew :node:runNode1
-```
-- Terminal 2:
-```bash
 ./gradlew :node:runNode2
-```
-- Terminal 3:
-```bash
 ./gradlew :node:runNode3
-```
-- Terminal 4:
-```bash
 ./gradlew :node:runNode4
-```
-- Terminal 5:
-```bash
 ./gradlew :node:runNode5
-```
-- Terminal 6:
-```bash
 ./gradlew :node:runNode6
-```
-- Terminal 7:
-```bash
 ./gradlew :node:runNode7
-```
-- Terminal 8:
-```bash
 ./gradlew :node:runNode8
-```
-- Terminal 9:
-```bash
 ./gradlew :node:runNode9
 ```
 
-These start nodes `n1`–`n9` on `127.0.0.1:51051`–`51059`.
-
-## Run the client
-Open a new terminal and run:
+### Run the Client
 ```bash
 ./gradlew :client:runClient
 ```
-This launches a single client process that spawns 10 client workers (A–J) and executes CSV-defined test sets.
 
-## Advancing between sets
-When a set finishes you will see a prompt like:
-```
+The client spawns multiple workers and executes transaction workloads defined via CSV files.
+
+### Advancing Between Workloads
+
+After completing a workload set, the client pauses:
+
+```text
 Set N complete. Press Enter to continue...
 client>
 ```
-Press **Enter** (on a blank line at the `client>` prompt) to proceed to the next set.
 
-## Client console commands
-You can inspect cluster state any time during or after execution:
-- **log** – Print transaction log from all nodes
-- **db** – Print database/balances from all nodes
-- **status <seq>** – Print status of a sequence number across all nodes
-- **view** – Print view history (leader elections)
-- **verify** – Verify database consistency across nodes
-- **reshard plan [n] [tol] [seeds]** – Generate a resharding plan from recent history (writes `client/shard-map.new.json`)
-- **reshard apply** – Promote the latest plan and reset nodes/client to use the new shard map
-- **help** – Show help
-- **quit** – Exit the client
+Press Enter to proceed to the next set.
 
-Note: These inspection commands work even when nodes are temporarily inactive/frozen between sets.
+## Runtime Inspection Commands
 
-## Resharding workflow (Project 3)
+Available from the client console at any time:
 
-Resharding moves accounts between clusters to reduce cross-shard transactions while keeping shards balanced.
+- `db` — print balances from all nodes
+- `log` — print replicated logs
+- `status <seq>` — transaction status per node
+- `view` — leader election history
+- `verify` — consistency check across replicas
+- `reshard plan [n] [tol] [seeds]` — generate a new shard mapping
+- `reshard apply` — apply the new shard mapping
+- `help` — list commands
+- `quit` — exit client
 
-High-level flow:
+These commands work even if nodes are temporarily failed between workloads.
 
-1. **Run workload and collect history**  
-   Transactions are appended to `client/history.jsonl` during normal execution.
-2. **Plan** (from the client console, with nodes running and no other activity):  
-   ```
+## Resharding Workflow
+
+ShardLedger supports offline, workload-driven resharding to reduce cross-shard traffic and balance load.
+
+### Steps
+
+1. **Run workloads**
+   Transaction history is recorded automatically.
+
+2. **Generate a plan**
+   ```text
    client> reshard plan [n] [tol] [seeds]
    ```
-   - `n` (default `100000`): number of recent transactions to consider
-   - `tol` (default `0.05`): balance tolerance (0–1)
-   - `seeds` (default `10`): multi-start runs for the partitioner
-   This produces `client/shard-map.new.json` describing the new mapping.
-3. **Stop client and nodes** to go offline for migration (no traffic during migration).
-4. **Run the offline migrator** (from the repository root):  
+   - `n` (default: recent transaction count)
+   - `tol` (balance tolerance)
+   - `seeds` (multi-start optimization runs)
+
+3. **Stop client and nodes**
+   No traffic during migration.
+
+4. **Run offline migration**
    ```bash
    ./gradlew :node:runOfflineMigrator \
-       -PmigrNew=client/shard-map.new.json \
-       -PmigrOld=client/shard-map.json
+     -PmigrNew=client/shard-map.new.json \
+     -PmigrOld=client/shard-map.json
    ```
-   If you omit the `-P` flags, these defaults are used.
-   The migrator reads the old and new shard maps and moves account balances between node databases.
-5. **Restart the nodes** using either `:node:runNodes` or the per-node tasks.  
-   Do not run any transactions yet.
-6. **Restart the client**:
+
+5. **Restart nodes**
+   ```bash
+   ./gradlew :node:runNodes
+   ```
+
+6. **Restart client**
    ```bash
    ./gradlew :client:runClient
    ```
-7. **Apply the new mapping** from the client console:
-   ```
+
+7. **Apply the new mapping**
+   ```text
    client> reshard apply
    ```
-   This promotes `shard-map.new.json` to the live `shard-map.json` (in the appropriate `client/` path) and sends a reset RPC to all nodes so they reload the shard map and reseed according to the new ownership. The client also reloads its shard map so routing matches the servers.
+   New transactions will now follow the updated shard assignment.
 
-After `reshard apply` completes, new transactions will be routed according to the resharded assignment.
+## Benchmarking
 
-## Customization (optional)
-- Change CSV file for the client:
+ShardLedger reports:
+- Throughput (transactions per second)
+- End-to-end latency
+
+Benchmarks support configurable:
+- Read vs write ratio
+- Intra-shard vs cross-shard ratio
+- Uniform or skewed (hot-key) access patterns
+
+## Customization
+
+### Use a Custom Workload
 ```bash
-./gradlew :client:runClient -PpaxosClientCsv=path/to/your.csv
+./gradlew :client:runClient -PpaxosClientCsv=path/to/workload.csv
 ```
-- Run nodes against a different host (defaults to 127.0.0.1):
+
+### Change Node Host
 ```bash
 ./gradlew :node:runNode1 -PpaxosNodeHost=192.168.1.100
 ```
-- Override client node targets explicitly (all nine nodes):
+
+### Override Node Addresses
 ```bash
 ./gradlew :client:runClient \
   -PpaxosNodes="n1=127.0.0.1:51051,n2=127.0.0.1:51052,n3=127.0.0.1:51053,\
@@ -151,10 +200,24 @@ After `reshard apply` completes, new transactions will be routed according to th
                n7=127.0.0.1:51057,n8=127.0.0.1:51058,n9=127.0.0.1:51059"
 ```
 
-## Stopping
-- **Client**: type `quit` at `client>` or press Ctrl+C.
-- **Nodes**: press Ctrl+C in each node terminal.
+## Stopping the System
+
+- **Client**: type `quit` or press `Ctrl+C`
+- **Nodes**: press `Ctrl+C` in each node terminal
 
 ## Troubleshooting
-- **Port in use**: ensure ports 51051–51055 are free or adjust ports in Gradle files.
-- **Java version**: verify `java -version` reports 21.
+
+- **Ports in use**: ensure ports `51051–51059` are free
+- **Wrong Java version**: verify with `java -version` (must be 21)
+- **Inconsistent state**: run `verify` from the client console
+
+## Why ShardLedger
+
+ShardLedger demonstrates real-world distributed systems engineering:
+- Consensus and leader election
+- Replicated state machines
+- Atomic transactions across shards
+- Failure handling and recovery
+- Performance measurement and observability
+
+The design closely mirrors systems used in distributed databases, payment platforms, and cloud infrastructure.
